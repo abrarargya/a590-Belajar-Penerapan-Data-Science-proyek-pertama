@@ -102,7 +102,7 @@ def predict(model, X_scaled, y_actual, df_original, threshold=0.3):
 if __name__ == "__main__":
     # Konfigurasi File
     input_csv = 'submission_JayaJayaMaju.csv' # Ganti dengan data baru yang mau diprediksi
-    model_file = 'employee_churn_model.pkl'
+    model_file = 'ann_employee_churn_model.pkl'
     output_csv = 'hasil_prediksi_final.csv'
     
     try:
