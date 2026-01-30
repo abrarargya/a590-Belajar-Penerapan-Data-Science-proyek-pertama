@@ -1,3 +1,4 @@
 data/
 .env/
-*.csv
+hasil_prediksi_final.csv
+data_dashboard_hr_analytics.csv
