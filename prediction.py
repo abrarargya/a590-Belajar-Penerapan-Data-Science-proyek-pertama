@@ -3,136 +3,157 @@ import pickle
 import numpy as np
 from sklearn.metrics import accuracy_score
 
-# load model, scaler, dan fitur dari file pickle
-def load_artifacts(filename='employee_churn_model.pkl'):
+def load_artifacts(filename='ann_employee_churn_model.pkl'):
     """
-    Memuat model, scaler, dan daftar fitur yang sudah disimpan sebelumnya.
+    Memuat model, scaler, dan daftar fitur dari file pickle.
     """
     print(f"Loading artifacts from {filename}...")
     with open(filename, 'rb') as file:
         artifacts = pickle.load(file)
-    
     return artifacts
 
-# Fungsi preprocessing
 def preprocessing(dataset, scaler, final_features):
     """
-    Menyiapkan data agar sesuai dengan format yang diminta model ANN.
-    Termasuk handling one-hot encoding manual jika diperlukan.
+    Preprocessing data agar formatnya 100% sama dengan model saat training.
     """
     df = dataset.copy()
-    
-    # Handling Feature Engineering (Jika data masih mentah) 
-    # Pastikan kolom 'MaritalStatus_Single' ada 
-    if 'MaritalStatus_Single' not in df.columns and 'MaritalStatus' in df.columns:
-        print("Transforming 'MaritalStatus' -> 'MaritalStatus_Single'...")
-        # Buat kolom Single (1 jika Single, 0 jika Married/Divorced)
-        df['MaritalStatus_Single'] = df['MaritalStatus'].apply(lambda x: 1 if x == 'Single' else 0)
-    
-    # Memisahkan Target (Jika ada, untuk validasi)
-    target_col = 'Attrition'
-    y_actual = None
-    if target_col in df.columns:
-        # Mapping Yes/No ke 1/0 jika belum numerik
-        if df[target_col].dtype == 'object':
-            y_actual = df[target_col].map({'Yes': 1, 'No': 0})
-        else:
-            y_actual = df[target_col]
-    
-    # -Seleksi Fitur & Scaling ---
-    # Hanya ambil fitur yang digunakan saat training (Golden Features)
-    try:
-        X_selected = df[final_features]
-    except KeyError as e:
-        print(f"Error: Kolom berikut hilang dari dataset: {e}")
-        print(f"Fitur yang dibutuhkan model: {final_features}")
-        raise
+    print("Starting preprocessing...")
 
-    # Lakukan Scaling menggunakan Scaler yang sudah dilatih sebelumnya (dari pickle)
-    # Jangan fit ulang scaler baru agar standar angkanya sama dengan training
+    # Bersihkan dan mapping kolom
+    y_actual = None
+    if 'Attrition' in df.columns:
+        # hilangkan spasi depan/belakang
+        df['Attrition'] = df['Attrition'].astype(str).str.strip() 
+        y_actual = df['Attrition'].map({'Yes': 1, 'No': 0})
+        
+        # Cek jika ada yang gagal dimapping (masih NaN)
+        if y_actual.isna().sum() > 0:
+            print(f"Warning: Ada {y_actual.isna().sum()} label 'Attrition' yang tidak valid/kosong. Baris ini akan diabaikan saat hitung akurasi.")
+
+    # Mapping fitur lain
+    if 'OverTime' in df.columns:
+        df['OverTime'] = df['OverTime'].astype(str).str.strip()
+        df['OverTime'] = df['OverTime'].map({'Yes': 1, 'No': 0})
+    
+    if 'Gender' in df.columns:
+        df['Gender'] = df['Gender'].map({'Male': 1, 'Female': 0})
+        
+    travel_map = {'Non-Travel': 0, 'Travel_Rarely': 1, 'Travel_Frequently': 2}
+    if 'BusinessTravel' in df.columns:
+        df['BusinessTravel'] = df['BusinessTravel'].map(travel_map)
+
+    # Feature engineering
+    if 'TotalWorkingYears' in df.columns and 'NumCompaniesWorked' in df.columns:
+        df['AvgYearsPerCompany'] = df['TotalWorkingYears'] / (df['NumCompaniesWorked'] + 1)
+        
+    if 'YearsAtCompany' in df.columns and 'TotalWorkingYears' in df.columns:
+        df['LoyaltyRatio'] = df['YearsAtCompany'] / (df['TotalWorkingYears'] + 1)
+
+    # One Hot Encoding
+    cols_categorical = ['Department', 'EducationField', 'JobRole', 'MaritalStatus']
+    cols_present = [c for c in cols_categorical if c in df.columns]
+    df = pd.get_dummies(df, columns=cols_present, drop_first=True)
+
+    # Safety net
+    for feature in final_features:
+        if feature not in df.columns:
+            df[feature] = 0 # Isi 0 jika kolom tidak ada di data input
+            
+    # Ambil hanya fitur yang dibutuhkan model
+    X_selected = df[final_features]
+
+    # Scaling
+    print("Scaling features...")
+    # Isi NaN dengan 0 dulu sebelum scaling (untuk jaga-jaga input kotor)
+    X_selected = X_selected.fillna(0)
     X_scaled = scaler.transform(X_selected)
     
-    print(f"Data berhasil diproses. Dimensi final: {X_scaled.shape}")
-    return X_scaled, y_actual, df
+    print(f"Data processed successfully. Final shape: {X_scaled.shape}")
+    return X_scaled, y_actual, dataset
 
-# Fungsi prediksi 
 def predict(model, X_scaled, y_actual, df_original, threshold=0.3):
     """
-    Melakukan prediksi churn menggunakan model ANN dengan threshold khusus.
+    Melakukan prediksi dan menghitung akurasi jika data label tersedia.
     """
-    # Prediksi Probabilitas (Kolom 1 = Kelas "Yes")
+    print("Running predictions...")
+    
+    # Prediksi Probabilitas
     probabilitas = model.predict_proba(X_scaled)[:, 1]
     
-    # Terapkan Threshold (0.3 sesuai rekomendasi agar lebih sensitif)
+    # Terapkan Threshold
     y_pred = (probabilitas >= threshold).astype(int)
     
-    # Menyusun DataFrame Hasil
+    # Susun DataFrame Hasil
     result_df = pd.DataFrame()
-    
-    # Ambil ID Karyawan jika ada
     if 'EmployeeId' in df_original.columns:
         result_df['EmployeeId'] = df_original['EmployeeId']
         
-    # Masukkan hasil prediksi
     result_df['Prediction_Label'] = y_pred
     result_df['Risk_Score'] = probabilitas
     result_df['Risk_Category'] = result_df['Prediction_Label'].map({
-        1: 'HIGH RISK (Berpotensi Keluar)', 
+        1: 'HIGH RISK (Potential Churn)', 
         0: 'Safe'
     })
     
-    # Jika ada data aktual, hitung akurasi
+    # Hitung Akurasi 
     accuracy = None
     if y_actual is not None:
         result_df['Attrition_Actual'] = y_actual.values
-        accuracy = accuracy_score(y_actual, y_pred)
+        
+        # Hanya hitung akurasi pada data yang labelnya valid (tidak NaN)
+        # Buat mask/filter: True jika data valid
+        valid_mask = ~y_actual.isna()
+        
+        if valid_mask.sum() > 0:
+            # Bandingkan y_actual vs y_pred HANYA pada baris yang valid
+            y_true_clean = y_actual[valid_mask]
+            y_pred_clean = y_pred[valid_mask]
+            
+            accuracy = accuracy_score(y_true_clean, y_pred_clean)
+        else:
+            print("Warning: Tidak bisa menghitung akurasi karena semua label Attrition NaN.")
     
-    # Gabungkan dengan fitur-fitur asli (inputan awal) agar informatif
-    # Kita ambil kolom-kolom penting saja untuk laporan
-    cols_to_show = ['MonthlyIncome', 'AvgYearsPerCompany', 'Age', 
-                    'JobSatisfaction', 'TotalWorkingYears']
-    
-    # Pastikan kolom ada di df_original sebelum di-concat
+    # Tambahkan fitur asli untuk konteks
+    cols_to_show = ['MonthlyIncome', 'AvgYearsPerCompany', 'Age', 'JobSatisfaction']
     existing_cols = [c for c in cols_to_show if c in df_original.columns]
     result_df = pd.concat([result_df, df_original[existing_cols].reset_index(drop=True)], axis=1)
     
     return result_df, accuracy
 
-# Definisikan program utama
 if __name__ == "__main__":
-    # Konfigurasi File
-    input_csv = 'jaya-jaya-maju.csv' # ada di repository
+    # Konfigurasi
+    input_csv = 'jaya-jaya-maju.csv' 
     model_file = 'ann_employee_churn_model.pkl'
     output_csv = 'hasil_prediksi_final.csv'
     
     try:
-        # Load Data & Artifacts
+        # 1. Load Data
+        print(f"Reading data from {input_csv}...")
         predict_df = pd.read_csv(input_csv)
-        artifacts = load_artifacts(model_file)
         
+        # 2. Load Model Artifacts
+        artifacts = load_artifacts(model_file)
         model = artifacts['model']
         scaler = artifacts['scaler']
         features = artifacts['features']
         
-        # Preprocessing
+        # 3. Preprocessing
         X_scaled, y_actual, df_processed = preprocessing(predict_df, scaler, features)
     
-        # Prediksi
-        result_df, acc = predict(model, X_scaled, y_actual, df_processed, threshold=0.3)
+        # 4. Prediksi
+        result_df, acc = predict(model, X_scaled, y_actual, predict_df, threshold=0.3)
         
-        # Simpan & Report
+        # 5. Simpan Hasil
         result_df.to_csv(output_csv, index=False)
-        print(f"\n[SUKSES] Hasil prediksi disimpan ke: {output_csv}")
+        print(f"\n[SUCCESS] Prediction saved to: {output_csv}")
         
         if acc is not None:
-            print(f"Akurasi Model pada data ini: {acc:.2%}")
-        else:
-            print("Data target ('Attrition') tidak ditemukan, hanya melakukan prediksi.")
+            print(f"Model Accuracy on this data: {acc:.2%}")
             
-        print("\nPreview 5 Data Teratas:")
-        print(result_df[['EmployeeId', 'Prediction_Label', 'Risk_Score', 'MonthlyIncome']].head())
+        print("\nPreview Top 5 High Risk Employees:")
+        print(result_df[result_df['Prediction_Label'] == 1].head())
         
     except FileNotFoundError as e:
-        print(f"Error: File tidak ditemukan - {e}")
+        print(f"Error: File not found - {e}")
     except Exception as e:
-        print(f"Terjadi kesalahan: {e}")
+        print(f"An error occurred: {e}")
